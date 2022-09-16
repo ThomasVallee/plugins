@@ -169,6 +169,6 @@ class _CameraAppState extends State<CameraApp> {
 }
 ```
 
-For a more elaborate usage example see [here](https://github.com/flutter/plugins/tree/main/packages/camera/camera/example).
+For a more elaborate usage example see [here](https://github.com/ThomasVallee/plugins/tree/main/packages/camera/camera/example).
 
 [1]: https://pub.dev/packages/camera_web#limitations-on-the-web-platform
