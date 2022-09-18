@@ -1,250 +1,320 @@
-// Copyright 2013 The Flutter Authors. All rights reserved.
+// Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 package io.flutter.plugins.videoplayer;
 
-import android.content.Context;
+import android.content.res.AssetFileDescriptor;
+import android.media.AudioAttributes;
+import android.media.AudioManager;
+import android.media.MediaPlayer;
 import android.os.Build;
-import android.util.LongSparseArray;
-import io.flutter.FlutterInjector;
-import io.flutter.Log;
-import io.flutter.embedding.engine.plugins.FlutterPlugin;
-import io.flutter.plugin.common.BinaryMessenger;
+import android.view.Surface;
 import io.flutter.plugin.common.EventChannel;
-import io.flutter.plugins.videoplayer.Messages.AndroidVideoPlayerApi;
-import io.flutter.plugins.videoplayer.Messages.CreateMessage;
-import io.flutter.plugins.videoplayer.Messages.LoopingMessage;
-import io.flutter.plugins.videoplayer.Messages.MixWithOthersMessage;
-import io.flutter.plugins.videoplayer.Messages.PlaybackSpeedMessage;
-import io.flutter.plugins.videoplayer.Messages.PositionMessage;
-import io.flutter.plugins.videoplayer.Messages.TextureMessage;
-import io.flutter.plugins.videoplayer.Messages.VolumeMessage;
+import io.flutter.plugin.common.MethodCall;
+import io.flutter.plugin.common.MethodChannel;
+import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
+import io.flutter.plugin.common.MethodChannel.Result;
+import io.flutter.plugin.common.PluginRegistry.Registrar;
 import io.flutter.view.TextureRegistry;
-import java.security.KeyManagementException;
-import java.security.NoSuchAlgorithmException;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import javax.net.ssl.HttpsURLConnection;
 
-/** Android platform implementation of the VideoPlayerPlugin. */
-public class VideoPlayerPlugin implements FlutterPlugin, AndroidVideoPlayerApi {
-  private static final String TAG = "VideoPlayerPlugin";
-  private final LongSparseArray<VideoPlayer> videoPlayers = new LongSparseArray<>();
-  private FlutterState flutterState;
-  private VideoPlayerOptions options = new VideoPlayerOptions();
+public class VideoPlayerPlugin implements MethodCallHandler {
+  private static class VideoPlayer {
+    private final TextureRegistry.SurfaceTextureEntry textureEntry;
+    private final MediaPlayer mediaPlayer;
+    private EventChannel.EventSink eventSink;
+    private final EventChannel eventChannel;
+    private boolean isInitialized = false;
 
-  /** Register this with the v2 embedding for the plugin to respond to lifecycle callbacks. */
-  public VideoPlayerPlugin() {}
-
-  @SuppressWarnings("deprecation")
-  private VideoPlayerPlugin(io.flutter.plugin.common.PluginRegistry.Registrar registrar) {
-    this.flutterState =
-        new FlutterState(
-            registrar.context(),
-            registrar.messenger(),
-            registrar::lookupKeyForAsset,
-            registrar::lookupKeyForAsset,
-            registrar.textures());
-    flutterState.startListening(this, registrar.messenger());
-  }
-
-  /** Registers this with the stable v1 embedding. Will not respond to lifecycle events. */
-  @SuppressWarnings("deprecation")
-  public static void registerWith(io.flutter.plugin.common.PluginRegistry.Registrar registrar) {
-    final VideoPlayerPlugin plugin = new VideoPlayerPlugin(registrar);
-    registrar.addViewDestroyListener(
-        view -> {
-          plugin.onDestroy();
-          return false; // We are not interested in assuming ownership of the NativeView.
-        });
-  }
-
-  @Override
-  public void onAttachedToEngine(FlutterPluginBinding binding) {
-    if (android.os.Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+    VideoPlayer(
+        EventChannel eventChannel,
+        TextureRegistry.SurfaceTextureEntry textureEntry,
+        AssetFileDescriptor afd,
+        final Result result) {
+      this.eventChannel = eventChannel;
+      this.mediaPlayer = new MediaPlayer();
+      this.textureEntry = textureEntry;
       try {
-        HttpsURLConnection.setDefaultSSLSocketFactory(new CustomSSLSocketFactory());
-      } catch (KeyManagementException | NoSuchAlgorithmException e) {
-        Log.w(
-            TAG,
-            "Failed to enable TLSv1.1 and TLSv1.2 Protocols for API level 19 and below.\n"
-                + "For more information about Socket Security, please consult the following link:\n"
-                + "https://developer.android.com/reference/javax/net/ssl/SSLSocket",
-            e);
+        mediaPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+        setupVideoPlayer(eventChannel, textureEntry, mediaPlayer, result);
+      } catch (IOException e) {
+        result.error("VideoError", "IOError when initializing video player " + e.toString(), null);
       }
     }
 
-    final FlutterInjector injector = FlutterInjector.instance();
-    this.flutterState =
-        new FlutterState(
-            binding.getApplicationContext(),
-            binding.getBinaryMessenger(),
-            injector.flutterLoader()::getLookupKeyForAsset,
-            injector.flutterLoader()::getLookupKeyForAsset,
-            binding.getTextureRegistry());
-    flutterState.startListening(this, binding.getBinaryMessenger());
-  }
-
-  @Override
-  public void onDetachedFromEngine(FlutterPluginBinding binding) {
-    if (flutterState == null) {
-      Log.wtf(TAG, "Detached from the engine before registering to it.");
+    VideoPlayer(
+        EventChannel eventChannel,
+        TextureRegistry.SurfaceTextureEntry textureEntry,
+        String dataSource,
+        Result result) {
+      this.eventChannel = eventChannel;
+      this.mediaPlayer = new MediaPlayer();
+      this.textureEntry = textureEntry;
+      try {
+        mediaPlayer.setDataSource(dataSource);
+        setupVideoPlayer(eventChannel, textureEntry, mediaPlayer, result);
+      } catch (IOException e) {
+        result.error("VideoError", "IOError when initializing video player " + e.toString(), null);
+      }
     }
-    flutterState.stopListening(binding.getBinaryMessenger());
-    flutterState = null;
-    initialize();
-  }
 
-  private void disposeAllPlayers() {
-    for (int i = 0; i < videoPlayers.size(); i++) {
-      videoPlayers.valueAt(i).dispose();
+    private void setupVideoPlayer(
+        EventChannel eventChannel,
+        TextureRegistry.SurfaceTextureEntry textureEntry,
+        final MediaPlayer mediaPlayer,
+        Result result) {
+
+      eventChannel.setStreamHandler(
+          new EventChannel.StreamHandler() {
+            @Override
+            public void onListen(Object o, EventChannel.EventSink sink) {
+              eventSink = sink;
+              sendInitialized();
+            }
+
+            @Override
+            public void onCancel(Object o) {
+              eventSink = null;
+            }
+          });
+
+      mediaPlayer.setSurface(new Surface(textureEntry.surfaceTexture()));
+      setAudioAttributes(mediaPlayer);
+      mediaPlayer.setOnPreparedListener(
+          new MediaPlayer.OnPreparedListener() {
+            @Override
+            public void onPrepared(MediaPlayer mp) {
+              mediaPlayer.setOnBufferingUpdateListener(
+                  new MediaPlayer.OnBufferingUpdateListener() {
+                    @Override
+                    public void onBufferingUpdate(MediaPlayer mediaPlayer, int percent) {
+                      if (eventSink != null) {
+                        Map<String, Object> event = new HashMap<>();
+                        event.put("event", "bufferingUpdate");
+                        List<Integer> range =
+                            Arrays.asList(0, percent * mediaPlayer.getDuration() / 100);
+                        // iOS supports a list of buffered ranges, so here is a list with a single range.
+                        event.put("values", Collections.singletonList(range));
+                        eventSink.success(event);
+                      }
+                    }
+                  });
+              isInitialized = true;
+              sendInitialized();
+            }
+          });
+
+      mediaPlayer.setOnErrorListener(
+          new MediaPlayer.OnErrorListener() {
+            @Override
+            public boolean onError(MediaPlayer mp, int what, int extra) {
+              eventSink.error(
+                  "VideoError", "Video player had error " + what + " extra " + extra, null);
+              return true;
+            }
+          });
+
+      mediaPlayer.setOnCompletionListener(
+          new MediaPlayer.OnCompletionListener() {
+            @Override
+            public void onCompletion(MediaPlayer mediaPlayer) {
+              Map<String, Object> event = new HashMap<>();
+              event.put("event", "completed");
+              eventSink.success(event);
+            }
+          });
+
+      mediaPlayer.prepareAsync();
+
+      Map<String, Object> reply = new HashMap<>();
+      reply.put("textureId", textureEntry.id());
+      result.success(reply);
     }
-    videoPlayers.clear();
-  }
 
-  private void onDestroy() {
-    // The whole FlutterView is being destroyed. Here we release resources acquired for all
-    // instances
-    // of VideoPlayer. Once https://github.com/flutter/flutter/issues/19358 is resolved this may
-    // be replaced with just asserting that videoPlayers.isEmpty().
-    // https://github.com/flutter/flutter/issues/20989 tracks this.
-    disposeAllPlayers();
-  }
-
-  public void initialize() {
-    disposeAllPlayers();
-  }
-
-  public TextureMessage create(CreateMessage arg) {
-    TextureRegistry.SurfaceTextureEntry handle =
-        flutterState.textureRegistry.createSurfaceTexture();
-    EventChannel eventChannel =
-        new EventChannel(
-            flutterState.binaryMessenger, "flutter.io/videoPlayer/videoEvents" + handle.id());
-
-    VideoPlayer player;
-    if (arg.getAsset() != null) {
-      String assetLookupKey;
-      if (arg.getPackageName() != null) {
-        assetLookupKey =
-            flutterState.keyForAssetAndPackageName.get(arg.getAsset(), arg.getPackageName());
+    @SuppressWarnings("deprecation")
+    private static void setAudioAttributes(MediaPlayer mediaPlayer) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        mediaPlayer.setAudioAttributes(
+            new AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                .build());
       } else {
-        assetLookupKey = flutterState.keyForAsset.get(arg.getAsset());
+        mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
       }
-      player =
-          new VideoPlayer(
-              flutterState.applicationContext,
-              eventChannel,
-              handle,
-              "asset:///" + assetLookupKey,
-              null,
-              null,
-              options);
-    } else {
-      @SuppressWarnings("unchecked")
-      Map<String, String> httpHeaders = arg.getHttpHeaders();
-      player =
-          new VideoPlayer(
-              flutterState.applicationContext,
-              eventChannel,
-              handle,
-              arg.getUri(),
-              arg.getFormatHint(),
-              httpHeaders,
-              options);
     }
-    videoPlayers.put(handle.id(), player);
 
-    TextureMessage result = new TextureMessage.Builder().setTextureId(handle.id()).build();
-    return result;
+    void play() {
+      if (!mediaPlayer.isPlaying()) {
+        mediaPlayer.start();
+      }
+    }
+
+    void pause() {
+      if (mediaPlayer.isPlaying()) {
+        mediaPlayer.pause();
+      }
+    }
+
+    void setLooping(boolean value) {
+      mediaPlayer.setLooping(value);
+    }
+
+    void setVolume(double value) {
+      float bracketedValue = (float) Math.max(0.0, Math.min(1.0, value));
+      mediaPlayer.setVolume(bracketedValue, bracketedValue);
+    }
+
+    void seekTo(int location) {
+      mediaPlayer.seekTo(location);
+    }
+
+    int getPosition() {
+      return mediaPlayer.getCurrentPosition();
+    }
+
+    private void sendInitialized() {
+      if (isInitialized && eventSink != null) {
+        Map<String, Object> event = new HashMap<>();
+        event.put("event", "initialized");
+        event.put("duration", mediaPlayer.getDuration());
+        event.put("width", mediaPlayer.getVideoWidth());
+        event.put("height", mediaPlayer.getVideoHeight());
+        eventSink.success(event);
+      }
+    }
+
+    void dispose() {
+      if (isInitialized && mediaPlayer.isPlaying()) {
+        mediaPlayer.stop();
+      }
+      mediaPlayer.reset();
+      mediaPlayer.release();
+      textureEntry.release();
+      eventChannel.setStreamHandler(null);
+    }
   }
 
-  public void dispose(TextureMessage arg) {
-    VideoPlayer player = videoPlayers.get(arg.getTextureId());
-    player.dispose();
-    videoPlayers.remove(arg.getTextureId());
+  public static void registerWith(Registrar registrar) {
+    final MethodChannel channel =
+        new MethodChannel(registrar.messenger(), "flutter.io/videoPlayer");
+    channel.setMethodCallHandler(new VideoPlayerPlugin(registrar));
   }
 
-  public void setLooping(LoopingMessage arg) {
-    VideoPlayer player = videoPlayers.get(arg.getTextureId());
-    player.setLooping(arg.getIsLooping());
+  private VideoPlayerPlugin(Registrar registrar) {
+    this.registrar = registrar;
+    this.videoPlayers = new HashMap<>();
   }
 
-  public void setVolume(VolumeMessage arg) {
-    VideoPlayer player = videoPlayers.get(arg.getTextureId());
-    player.setVolume(arg.getVolume());
-  }
-
-  public void setPlaybackSpeed(PlaybackSpeedMessage arg) {
-    VideoPlayer player = videoPlayers.get(arg.getTextureId());
-    player.setPlaybackSpeed(arg.getSpeed());
-  }
-
-  public void play(TextureMessage arg) {
-    VideoPlayer player = videoPlayers.get(arg.getTextureId());
-    player.play();
-  }
-
-  public PositionMessage position(TextureMessage arg) {
-    VideoPlayer player = videoPlayers.get(arg.getTextureId());
-    PositionMessage result =
-        new PositionMessage.Builder()
-            .setPosition(player.getPosition())
-            .setTextureId(arg.getTextureId())
-            .build();
-    player.sendBufferingUpdate();
-    return result;
-  }
-
-  public void seekTo(PositionMessage arg) {
-    VideoPlayer player = videoPlayers.get(arg.getTextureId());
-    player.seekTo(arg.getPosition().intValue());
-  }
-
-  public void pause(TextureMessage arg) {
-    VideoPlayer player = videoPlayers.get(arg.getTextureId());
-    player.pause();
-  }
+  private final Map<Long, VideoPlayer> videoPlayers;
+  private final Registrar registrar;
 
   @Override
-  public void setMixWithOthers(MixWithOthersMessage arg) {
-    options.mixWithOthers = arg.getMixWithOthers();
-  }
-
-  private interface KeyForAssetFn {
-    String get(String asset);
-  }
-
-  private interface KeyForAssetAndPackageName {
-    String get(String asset, String packageName);
-  }
-
-  private static final class FlutterState {
-    private final Context applicationContext;
-    private final BinaryMessenger binaryMessenger;
-    private final KeyForAssetFn keyForAsset;
-    private final KeyForAssetAndPackageName keyForAssetAndPackageName;
-    private final TextureRegistry textureRegistry;
-
-    FlutterState(
-        Context applicationContext,
-        BinaryMessenger messenger,
-        KeyForAssetFn keyForAsset,
-        KeyForAssetAndPackageName keyForAssetAndPackageName,
-        TextureRegistry textureRegistry) {
-      this.applicationContext = applicationContext;
-      this.binaryMessenger = messenger;
-      this.keyForAsset = keyForAsset;
-      this.keyForAssetAndPackageName = keyForAssetAndPackageName;
-      this.textureRegistry = textureRegistry;
+  public void onMethodCall(MethodCall call, Result result) {
+    TextureRegistry textures = registrar.textures();
+    if (textures == null) {
+      result.error("no_activity", "video_player plugin requires a foreground activity", null);
+      return;
     }
+    switch (call.method) {
+      case "init":
+        for (VideoPlayer player : videoPlayers.values()) {
+          player.dispose();
+        }
+        videoPlayers.clear();
+        break;
+      case "create":
+        {
+          TextureRegistry.SurfaceTextureEntry handle = textures.createSurfaceTexture();
+          EventChannel eventChannel =
+              new EventChannel(
+                  registrar.messenger(), "flutter.io/videoPlayer/videoEvents" + handle.id());
 
-    void startListening(VideoPlayerPlugin methodCallHandler, BinaryMessenger messenger) {
-      AndroidVideoPlayerApi.setup(messenger, methodCallHandler);
+          VideoPlayer player;
+          if (call.argument("asset") != null) {
+            try {
+              String assetLookupKey;
+              if (call.argument("package") != null) {
+                assetLookupKey =
+                    registrar.lookupKeyForAsset(
+                        (String) call.argument("asset"), (String) call.argument("package"));
+              } else {
+                assetLookupKey = registrar.lookupKeyForAsset((String) call.argument("asset"));
+              }
+              AssetFileDescriptor fd = registrar.context().getAssets().openFd(assetLookupKey);
+              player = new VideoPlayer(eventChannel, handle, fd, result);
+              videoPlayers.put(handle.id(), player);
+            } catch (IOException e) {
+              result.error(
+                  "IOError",
+                  "Error trying to access asset "
+                      + (String) call.argument("asset")
+                      + ". "
+                      + e.toString(),
+                  null);
+            }
+          } else {
+            player = new VideoPlayer(eventChannel, handle, (String) call.argument("uri"), result);
+            videoPlayers.put(handle.id(), player);
+          }
+          break;
+        }
+      default:
+        {
+          long textureId = ((Number) call.argument("textureId")).longValue();
+          VideoPlayer player = videoPlayers.get(textureId);
+          if (player == null) {
+            result.error(
+                "Unknown textureId",
+                "No video player associated with texture id " + textureId,
+                null);
+            return;
+          }
+          onMethodCall(call, result, textureId, player);
+          break;
+        }
     }
+  }
 
-    void stopListening(BinaryMessenger messenger) {
-      AndroidVideoPlayerApi.setup(messenger, null);
+  private void onMethodCall(MethodCall call, Result result, long textureId, VideoPlayer player) {
+    switch (call.method) {
+      case "setLooping":
+        player.setLooping((Boolean) call.argument("looping"));
+        result.success(null);
+        break;
+      case "setVolume":
+        player.setVolume((Double) call.argument("volume"));
+        result.success(null);
+        break;
+      case "play":
+        player.play();
+        result.success(null);
+        break;
+      case "pause":
+        player.pause();
+        result.success(null);
+        break;
+      case "seekTo":
+        int location = ((Number) call.argument("location")).intValue();
+        player.seekTo(location);
+        result.success(null);
+        break;
+      case "position":
+        result.success(player.getPosition());
+        break;
+      case "dispose":
+        player.dispose();
+        videoPlayers.remove(textureId);
+        result.success(null);
+        break;
+      default:
+        result.notImplemented();
+        break;
     }
   }
 }

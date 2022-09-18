@@ -1,18 +1,10 @@
 group 'io.flutter.plugins.videoplayer'
 version '1.0-SNAPSHOT'
-def args = ["-Xlint:deprecation","-Xlint:unchecked","-Werror"]
 
 buildscript {
     repositories {
-        jcenter()
         google()
-        mavenCentral()
-        maven {
-            url "https://jitpack.io"
-        }
-        flatDir {
-            dirs 'libs'
-        }
+        jcenter()
     }
 
     dependencies {
@@ -22,60 +14,21 @@ buildscript {
 
 rootProject.allprojects {
     repositories {
-        jcenter()
         google()
-        mavenCentral()
-        maven {
-            url "https://jitpack.io"
-        }
-        flatDir {
-            dirs 'libs'
-        }
+        jcenter()
     }
 }
 
-
-project.getTasks().withType(JavaCompile){
-    options.compilerArgs.addAll(args)
-}
-
 apply plugin: 'com.android.library'
-
-
 
 android {
     compileSdkVersion 31
 
     defaultConfig {
         minSdkVersion 16
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
     }
     lintOptions {
         disable 'InvalidPackage'
-        disable 'GradleDependency'
-    }
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
-    }
-
-    dependencies {
-        implementation 'com.google.android.exoplayer:exoplayer:2.7.3'
-        testImplementation 'junit:junit:4.13.2'
-        testImplementation 'androidx.test:core:1.3.0'
-        testImplementation 'org.mockito:mockito-inline:4.7.0'
-        testImplementation 'org.robolectric:robolectric:4.8.1'
-    }
-
-    testOptions {
-        unitTests.includeAndroidResources = true
-        unitTests.returnDefaultValues = true
-        unitTests.all {
-            testLogging {
-               events "passed", "skipped", "failed", "standardOut", "standardError"
-               outputs.upToDateWhen {false}
-               showStandardStreams = true
-            }
-        }
     }
 }
