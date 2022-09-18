@@ -2,6 +2,37 @@ group 'io.flutter.plugins.videoplayer'
 version '1.0-SNAPSHOT'
 def args = ["-Xlint:deprecation","-Xlint:unchecked","-Werror"]
 
+buildscript {
+    repositories {
+        jcenter()
+        google()
+        mavenCentral()
+        maven {
+            url "https://jitpack.io"
+        }
+        flatDir {
+            dirs 'libs'
+        }
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:gradle:7.2.1'
+    }
+}
+
+rootProject.allprojects {
+    repositories {
+        jcenter()
+        google()
+        mavenCentral()
+        maven {
+            url "https://jitpack.io"
+        }
+        flatDir {
+            dirs 'libs'
+        }
+    }
+}
 
 
 project.getTasks().withType(JavaCompile){
@@ -29,6 +60,7 @@ android {
     }
 
     dependencies {
+        implementation 'com.google.android.exoplayer:2.7.3'
         testImplementation 'junit:junit:4.13.2'
         testImplementation 'androidx.test:core:1.3.0'
         testImplementation 'org.mockito:mockito-inline:4.7.0'
@@ -46,20 +78,4 @@ android {
             }
         }
     }
-}
-
-repositories {
-    jcenter()
-    google()
-    mavenCentral()
-    maven {
-        url "https://jitpack.io"
-    }
-    flatDir {
-        dirs 'libs'
-    }
-}
-
-dependencies {
-    implementation 'com.google.android.exoplayer:exoplayer:2.7.3'
 }
