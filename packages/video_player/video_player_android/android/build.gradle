@@ -6,6 +6,7 @@ buildscript {
     repositories {
         google()
         mavenCentral()
+        maven { url "https://repo.spring.io/release" }
     }
 
     dependencies {
@@ -17,6 +18,8 @@ rootProject.allprojects {
     repositories {
         google()
         mavenCentral()
+        mavenCentral()
+        maven { url "https://repo.spring.io/release" }
     }
 }
 
@@ -25,6 +28,8 @@ project.getTasks().withType(JavaCompile){
 }
 
 apply plugin: 'com.android.library'
+
+
 
 android {
     compileSdkVersion 31
@@ -43,7 +48,10 @@ android {
     }
 
     dependencies {
-        implementation 'com.google.android.exoplayer:exoplayer:2.7.3'
+        implementation 'com.google.android.exoplayer:exoplayer-core:2.7.3'
+        implementation 'com.google.android.exoplayer:exoplayer-dash:2.7.3'
+        implementation 'com.google.android.exoplayer:exoplayer-hls:2.7.3'
+        implementation 'com.google.android.exoplayer:exoplayer-smoothstreaming:2.7.3'
         testImplementation 'junit:junit:4.13.2'
         testImplementation 'androidx.test:core:1.3.0'
         testImplementation 'org.mockito:mockito-inline:4.7.0'
@@ -61,4 +69,10 @@ android {
             }
         }
     }
+}
+
+repositories {
+    google()
+    mavenCentral()
+    maven { url "https://repo.spring.io/release" }
 }
